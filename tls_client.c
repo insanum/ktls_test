@@ -61,6 +61,8 @@ int config_ktls(int sockfd, WOLFSSL *ssl)
 	const unsigned char *key, *iv;
 	int key_size, iv_size, crypto_size;
 	unsigned long seq;
+	unsigned int rand_hi, rand_lo;
+	time_t t;
 
 	if (!ktls_tx && !ktls_rx)
 		return 0;
@@ -105,6 +107,10 @@ int config_ktls(int sockfd, WOLFSSL *ssl)
 			? TLS_CIPHER_AES_GCM_128
 			: TLS_CIPHER_AES_GCM_256;
 
+	srand((unsigned int)time(&t));
+	rand_hi = rand();
+	rand_lo = rand();
+
 	if (ktls_tx) {
 		key = (wolfSSL_GetSide(ssl) == WOLFSSL_CLIENT_END)
 			? wolfSSL_GetClientWriteKey(ssl)
@@ -120,12 +126,14 @@ int config_ktls(int sockfd, WOLFSSL *ssl)
 		if (key_size == TLS_CIPHER_AES_GCM_128_KEY_SIZE) {
 			memcpy(crypto_128.key, key, key_size);
 			memcpy(crypto_128.salt, iv, iv_size);
-			memset(crypto_128.iv, 0, sizeof(crypto_128.iv));
+			memcpy(crypto_128.iv, (unsigned char *)&rand_hi, 4);
+			memcpy((crypto_128.iv + 4), (unsigned char *)&rand_lo, 4);
 			memcpy(crypto_128.rec_seq, &seq, sizeof(seq));
 		} else { /* (key_size == TLS_CIPHER_AES_GCM_256_KEY_SIZE) */
 			memcpy(crypto_256.key, key, key_size);
 			memcpy(crypto_256.salt, iv, iv_size);
-			memset(crypto_256.iv, 0, sizeof(crypto_256.iv));
+			memcpy(crypto_256.iv, (unsigned char *)&rand_hi, 4);
+			memcpy((crypto_256.iv + 4), (unsigned char *)&rand_lo, 4);
 			memcpy(crypto_256.rec_seq, &seq, sizeof(seq));
 		}
 
@@ -150,12 +158,14 @@ int config_ktls(int sockfd, WOLFSSL *ssl)
 		if (key_size == TLS_CIPHER_AES_GCM_128_KEY_SIZE) {
 			memcpy(crypto_128.key, key, key_size);
 			memcpy(crypto_128.salt, iv, iv_size);
-			memset(crypto_128.iv, 0, sizeof(crypto_128.iv));
+			memcpy(crypto_128.iv, (unsigned char *)&rand_hi, 4);
+			memcpy((crypto_128.iv + 4), (unsigned char *)&rand_lo, 4);
 			memcpy(crypto_128.rec_seq, &seq, sizeof(seq));
 		} else { /* (key_size == TLS_CIPHER_AES_GCM_256_KEY_SIZE) */
 			memcpy(crypto_256.key, key, key_size);
 			memcpy(crypto_256.salt, iv, iv_size);
-			memset(crypto_256.iv, 0, sizeof(crypto_256.iv));
+			memcpy(crypto_256.iv, (unsigned char *)&rand_hi, 4);
+			memcpy((crypto_256.iv + 4), (unsigned char *)&rand_lo, 4);
 			memcpy(crypto_256.rec_seq, &seq, sizeof(seq));
 		}
 
