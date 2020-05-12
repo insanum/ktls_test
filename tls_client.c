@@ -13,8 +13,12 @@
 #define SERVER_PORT     4433
 #define SERVER_CA_FILE  "certs/ca-cert.pem"
 
+bool quiet = false;
+bool random_bufsize = false;
 int bufsize = 32768;
+int generate_data = 0;
 bool tcp_cork = false;
+bool send_all = false;
 bool ktls_tx = false;
 bool ktls_rx = false;
 int server_port = SERVER_PORT;
@@ -25,6 +29,12 @@ enum {
 	AES_128,
 	AES_256
 } aes = AES_128;
+
+static int b_rand(int max)
+{
+	int b = (rand() % max);
+	return (b == 0) ? max : b;
+}
 
 static int create_socket(char *server_ip, int port)
 {
@@ -62,7 +72,6 @@ int config_ktls(int sockfd, WOLFSSL *ssl)
 	int key_size, iv_size, crypto_size;
 	unsigned long seq;
 	unsigned int rand_hi, rand_lo;
-	time_t t;
 
 	if (!ktls_tx && !ktls_rx)
 		return 0;
@@ -107,7 +116,6 @@ int config_ktls(int sockfd, WOLFSSL *ssl)
 			? TLS_CIPHER_AES_GCM_128
 			: TLS_CIPHER_AES_GCM_256;
 
-	srand((unsigned int)time(&t));
 	rand_hi = rand();
 	rand_lo = rand();
 
@@ -179,6 +187,186 @@ int config_ktls(int sockfd, WOLFSSL *ssl)
 	return 0;
 }
 
+static int send_all_and_receive(int sockfd, WOLFSSL *ssl, char *buf,
+				int *totsent, int *totreceived)
+{
+	int tmp_bufsize = bufsize;
+	char buf_fill = 'a';
+	int maxlen = 0;
+	int len, cnt;
+
+	socklen_t maxlen_size = sizeof(maxlen);
+	getsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, (char *)&maxlen,
+		   &maxlen_size);
+
+	if (tcp_cork) {
+		int state = 1;
+		setsockopt(sockfd, IPPROTO_TCP, TCP_CORK, &state,
+			   sizeof(state));
+	}
+
+	/* limit generated data to the max window size (only when corking) */
+	if (generate_data > maxlen)
+		generate_data = maxlen;
+
+	for (cnt = 1; true; cnt++) {
+		len = (random_bufsize) ? b_rand(tmp_bufsize) : tmp_bufsize;
+
+		if (generate_data) {
+			/*
+			 * Generate data by filling the buffer with a single
+			 * character. Each buffer uses the next character
+			 * wrapping a-z.
+			 */
+			memset(buf, buf_fill, len);
+			if (++buf_fill == ('z' + 1))
+				buf_fill = 'a';
+
+			printf("%4d: (generated) %d bytes\n", cnt, len);
+		} else {
+			/*
+			 * Read data from stdin. This will be either from
+			 * cmd/file data piped in or via user keyboard input.
+			 */
+			if ((len = read(STDIN_FILENO, buf, len)) <= 0)
+				break;
+
+			printf("%4d: (input) read %d bytes\n", cnt, len);
+		}
+
+		if (ktls_tx)
+			len = send(sockfd, buf, len, 0);
+		else
+			len = wolfSSL_send(ssl, buf, len, 0);
+		if (len <= 0) {
+			printf("SSL write error %d\n",
+			       wolfSSL_get_error(ssl, 0));
+			break;
+		}
+
+		printf("%4d: sent %d bytes\n", cnt, len);
+
+		*totsent += len;
+
+		/*
+		 * Don't extend past our receive window or past the requested
+		 * generation size.
+		 */
+		if (generate_data) {
+			if (*totsent >= generate_data)
+				break;
+			else if ((*totsent + bufsize) > generate_data)
+				tmp_bufsize = (generate_data - *totsent);
+		} else {
+			if (*totsent >= maxlen)
+				break;
+			else if ((*totsent + bufsize) > maxlen)
+				tmp_bufsize = (maxlen - *totsent);
+		}
+	}
+
+	for (cnt = 1; (*totreceived < *totsent); cnt++) {
+		if (ktls_rx)
+			len = recv(sockfd, buf, bufsize, 0);
+		else
+			len = wolfSSL_read(ssl, buf, bufsize);
+		if (len <= 0) {
+			printf("ERROR: SSL read error %d\n",
+			       wolfSSL_get_error(ssl, 0));
+			break;
+		}
+
+		printf("%4d: received %d bytes\n", cnt, len);
+
+		if (!quiet) {
+			write(STDOUT_FILENO, buf, len);
+			printf("\n");
+		}
+
+		*totreceived += len;
+	}
+}
+
+static int send_receive_repeat(int sockfd, WOLFSSL *ssl, char *buf,
+			       int *totsent, int *totreceived)
+{
+	int tmp_bufsize = bufsize;
+	char buf_fill = 'a';
+	int totrx;
+	int len, cnt;
+
+	for (cnt = 1; true; cnt++) {
+		len = (random_bufsize) ? b_rand(tmp_bufsize) : tmp_bufsize;
+
+		if (generate_data) {
+			/*
+			 * Generate data by filling the buffer with a single
+			 * character. Each buffer uses the next character
+			 * wrapping a-z.
+			 */
+			memset(buf, buf_fill, len);
+			if (++buf_fill == ('z' + 1))
+				buf_fill = 'a';
+
+			printf("%4d: (generated) %d bytes\n", cnt, len);
+		} else {
+			/*
+			 * Read data from stdin. This will be either from
+			 * cmd/file data piped in or via user keyboard input.
+			 */
+			if ((len = read(STDIN_FILENO, buf, len)) <= 0)
+				break;
+
+			printf("%4d: (input) read %d bytes\n", cnt, len);
+		}
+
+		if (ktls_tx)
+			len = send(sockfd, buf, len, 0);
+		else
+			len = wolfSSL_send(ssl, buf, len, 0);
+		if (len <= 0) {
+			printf("SSL write error %d\n",
+			       wolfSSL_get_error(ssl, 0));
+			break;
+		}
+
+		printf("%4d: sent %d bytes\n", cnt, len);
+
+		*totsent += len;
+
+		totrx = 0;
+		while (totrx < len) {
+			if (ktls_rx)
+				len = recv(sockfd, buf, bufsize, 0);
+			else
+				len = wolfSSL_read(ssl, buf, bufsize);
+			if (len <= 0) {
+				printf("ERROR: SSL read error %d\n",
+				       wolfSSL_get_error(ssl, 0));
+				break;
+			}
+
+			printf("%4d: received %d bytes\n", cnt, len);
+
+			if (!quiet) {
+				write(STDOUT_FILENO, buf, len);
+				printf("\n");
+			}
+
+			totrx += len;
+			*totreceived += len;
+		}
+
+		/* Don't extend past the requested generation size. */
+		if (generate_data) {
+			if (*totsent >= generate_data)
+				break;
+			else if ((*totsent + bufsize) > generate_data)
+				tmp_bufsize = (generate_data - *totsent);
+		}
+	}
+}
+
 static void echoclient(void)
 {
 	WOLFSSL_METHOD *method;
@@ -187,8 +375,8 @@ static void echoclient(void)
 	char *buf;
 	int sockfd;
 	int totsent = 0;
-	int totrx, totreceived = 0;
-	int rc, len;
+	int totreceived = 0;
+	int rc;
 
 	method = wolfSSLv23_client_method();
 	ctx    = wolfSSL_CTX_new(method);
@@ -257,89 +445,20 @@ static void echoclient(void)
 		goto end_sock;
 	}
 
-	if (tcp_cork) {
-		int state = 1;
-		setsockopt(sockfd, IPPROTO_TCP, TCP_CORK, &state,
-			   sizeof(state));
-	}
-
 	buf = malloc(bufsize);
 	if (!buf) {
 		printf("ERROR: Failed to allocate buffer\n");
 		goto end_shutdown;
 	}
 
-	printf("Buffer size is %d\n", bufsize);
+	printf("Buffer size is %s%d\n",
+	       (random_bufsize) ? "random 1.." : "",
+	       bufsize);
 
-	if (tcp_cork) {
-		while ((len = read(STDIN_FILENO, buf, bufsize)) > 0) {
-			printf("***** send from buffer size %d\n", len);
-			if (ktls_tx)
-				rc = send(sockfd, buf, len, 0);
-			else
-				rc = wolfSSL_write(ssl, buf, len);
-			if (rc <= 0) {
-				printf("SSL write error %d\n",
-				       wolfSSL_get_error(ssl, 0));
-				break;
-			}
-
-			totsent += len;
-		}
-
-		while (totreceived < totsent) {
-			if (ktls_rx)
-				rc = recv(sockfd, buf, bufsize, 0);
-			else
-				rc = wolfSSL_read(ssl, buf, bufsize);
-			if (rc <= 0) {
-				printf("ERROR: SSL read error %d\n",
-				       wolfSSL_get_error(ssl, 0));
-				break;
-			}
-
-			printf("##### received %d bytes\n", rc);
-			write(STDOUT_FILENO, buf, rc);
-			printf("\n");
-
-			totreceived += rc;
-		}
-	} else {
-		while ((len = read(STDIN_FILENO, buf, bufsize)) > 0) {
-			printf("***** send from buffer size %d\n", len);
-			if (ktls_tx)
-				rc = send(sockfd, buf, len, 0);
-			else
-				rc = wolfSSL_write(ssl, buf, len);
-			if (rc <= 0) {
-				printf("SSL write error %d\n",
-				       wolfSSL_get_error(ssl, 0));
-				break;
-			}
-
-			totsent += len;
-
-			totrx = 0;
-			while (totrx < len) {
-				if (ktls_rx)
-					rc = recv(sockfd, buf, bufsize, 0);
-				else
-					rc = wolfSSL_read(ssl, buf, bufsize);
-				if (rc <= 0) {
-					printf("ERROR: SSL read error %d\n",
-					       wolfSSL_get_error(ssl, 0));
-					break;
-				}
-
-				printf("##### received %d bytes\n", rc);
-				write(STDOUT_FILENO, buf, rc);
-				printf("\n");
-
-				totrx += rc;
-				totreceived += rc;
-			}
-		}
-	}
+	if (send_all)
+		send_all_and_receive(sockfd, ssl, buf, &totsent, &totreceived);
+	else
+		send_receive_repeat(sockfd, ssl, buf, &totsent, &totreceived);
 
 	printf("In total sent %d and received %d bytes\n",
 	       totsent, totreceived);
@@ -357,25 +476,40 @@ end_ctx:
 
 static void usage(char *cmd)
 {
-	printf("Usage: %s [-t] [-k <dir>] [-b <size>] [-p <port>] -s <ip>\n",
-	       cmd);
-	printf("  -h         this usage info\n");
-	printf("  -t         enable TCP cork (default off)\n");
-	printf("  -k <dir>   KTLS direction (tx|rx|all|none) (default none)\n");
-	printf("  -a <aes>   AES key size (128|256) (default 128)\n");
-	printf("  -b <size>  send buffer size (default 32768)\n");
-	printf("  -p <port>  server port to connect to (default 4433)\n");
-	printf("  -s <ip>    server IP to connect to\n");
+	printf(
+"Usage: %s [ <arguments> ] -s <ip>\n"
+"  -h           this usage info\n"
+"  -T           enable TCP cork (default off)\n"
+"  -t           send all data then receive (default send/recv/repeat)\n"
+"  -q           quiet, don't print out received data\n"
+"  -k <dir>     KTLS direction (tx|rx|all|none) (default none)\n"
+"  -a <aes>     AES key size (128|256) (default 128)\n"
+"  -b <size>    send buffer (record) size (default 32768)\n"
+"  -r <max>     use random send buffer (record) sizes (0..<max>)\n"
+"  -g <length>  generate 'length' bytes (default stdin)\n"
+"  -p <port>    server port to connect to (default 4433)\n"
+"  -s <ip>      server IP to connect to\n",
+cmd);
 }
 
 int main(int argc, char *argv[])
 {
 	int option;
+	time_t t;
 
-	while ((option = getopt(argc, argv, "htk:a:b:p:s:")) != -1) {
+	srand((unsigned int)time(&t));
+
+	while ((option = getopt(argc, argv, "hTtqk:a:b:r:g:p:s:")) != -1) {
 		switch (option) {
-		case 't':
+		case 'T':
+			send_all = true;
 			tcp_cork = true;
+			break;
+		case 't':
+			send_all = true;
+			break;
+		case 'q':
+			quiet = true;
 			break;
 		case 'k':
 			if (strcmp(optarg, "tx") == 0) {
@@ -404,6 +538,13 @@ int main(int argc, char *argv[])
 			break;
 		case 'b':
 			bufsize = atoi(optarg);
+			break;
+		case 'r':
+			random_bufsize = true;
+			bufsize = atoi(optarg);
+			break;
+		case 'g':
+			generate_data = atoi(optarg);
 			break;
 		case 'p':
 			server_port = atoi(optarg);

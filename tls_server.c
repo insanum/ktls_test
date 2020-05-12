@@ -193,10 +193,7 @@ int config_ktls(int sockfd, WOLFSSL *ssl)
 static void servelet(int client, WOLFSSL *ssl)
 {
 	char *buf;
-	int bytes;
-	int rc = 0;
-
-	int err = 0;
+	int rc, cnt, len;
 
 	rc = wolfSSL_accept(ssl);
 	if (rc != WOLFSSL_SUCCESS) {
@@ -226,30 +223,30 @@ static void servelet(int client, WOLFSSL *ssl)
 		goto end_shutdown;
 	}
 
-	while (1) {
+	for (cnt = 1; true; cnt++) {
 		if (ktls_rx)
-			bytes = recv(client, buf, bufsize, 0);
+			len = recv(client, buf, bufsize, 0);
 		else
-			bytes = wolfSSL_read(ssl, buf, bufsize);
-		if (bytes <= 0) {
+			len = wolfSSL_read(ssl, buf, bufsize);
+		if (len <= 0) {
 			printf("ERROR: read error %d\n",
 			       wolfSSL_get_error(ssl, 0));
 			break;
 		}
 
-		printf("%d bytes received\n", bytes);
-
-		printf("sending back %d bytes\n", bytes);
+		printf("%4d: received %d bytes\n", cnt, len);
 
 		if (ktls_tx)
-			bytes = send(client, buf, bytes, 0);
+			len = send(client, buf, len, 0);
 		else
-			bytes = wolfSSL_write(ssl, buf, bytes);
-		if (bytes <= 0) {
+			len = wolfSSL_send(ssl, buf, len, 0);
+		if (len <= 0) {
 			printf("ERROR: write error %d\n",
 			       wolfSSL_get_error(ssl, 0));
 			break;
 		}
+
+		printf("%4d: echo back %d bytes\n", cnt, len);
 	}
 
 	free(buf);
@@ -332,21 +329,23 @@ static void echoserver(void)
 
 static void usage(char *cmd)
 {
-	printf("Usage: %s [ -t ] [ -b <size> ]\n", cmd);
-	printf("  -h         this usage info\n");
-	printf("  -t         enable TCP cork (default off)\n");
-	printf("  -k <dir>   KTLS direction (tx|rx|all|none) (default none)\n");
-	printf("  -b <size>  send buffer size (default 32768)\n");
-	printf("  -p <port>  port to bind to (default 4433)\n");
+	printf(
+"Usage: %s [ <arguments> ] [ -b <size> ]\n"
+"  -h         this usage info\n"
+"  -T         enable TCP cork (default off)\n"
+"  -k <dir>   KTLS direction (tx|rx|all|none) (default none)\n"
+"  -b <size>  send buffer size (default 32768)\n"
+"  -p <port>  port to bind to (default 4433)\n",
+cmd);
 }
 
 int main(int argc, char *argv[])
 {
 	int option;
 
-	while ((option = getopt(argc, argv, "htk:b:p:")) != -1) {
+	while ((option = getopt(argc, argv, "hTk:b:p:")) != -1) {
 		switch (option) {
-		case 't':
+		case 'T':
 			tcp_cork = true;
 			break;
 		case 'k':
