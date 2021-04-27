@@ -136,15 +136,25 @@ int config_ktls(int sockfd, WOLFSSL *ssl)
 
 		if (key_size == TLS_CIPHER_AES_GCM_128_KEY_SIZE) {
 			memcpy(crypto_128.key, key, key_size);
-			memcpy(crypto_128.salt, iv, iv_size);
-			memcpy(crypto_128.iv, (unsigned char *)&rand_hi, 4);
-			memcpy((crypto_128.iv + 4), (unsigned char *)&rand_lo, 4);
+			if (crypto_info->version == TLS_1_2_VERSION) {
+			    memcpy(crypto_128.salt, iv, 4);
+			    memcpy(crypto_128.iv, (unsigned char *)&rand_hi, 4);
+			    memcpy((crypto_128.iv + 4), (unsigned char *)&rand_lo, 4);
+			} else { /* TLS_1_3_VERSION */
+			    memcpy(crypto_128.salt, iv, 4);
+			    memcpy(crypto_128.iv, (iv + 4), 8);
+			}
 			memcpy(crypto_128.rec_seq, &seq, sizeof(seq));
 		} else { /* (key_size == TLS_CIPHER_AES_GCM_256_KEY_SIZE) */
 			memcpy(crypto_256.key, key, key_size);
-			memcpy(crypto_256.salt, iv, iv_size);
-			memcpy(crypto_256.iv, (unsigned char *)&rand_hi, 4);
-			memcpy((crypto_256.iv + 4), (unsigned char *)&rand_lo, 4);
+			if (crypto_info->version == TLS_1_2_VERSION) {
+			    memcpy(crypto_256.salt, iv, 4);
+			    memcpy(crypto_256.iv, (unsigned char *)&rand_hi, 4);
+			    memcpy((crypto_256.iv + 4), (unsigned char *)&rand_lo, 4);
+			} else { /* TLS_1_3_VERSION */
+			    memcpy(crypto_256.salt, iv, 4);
+			    memcpy(crypto_256.iv, (iv + 4), 8);
+			}
 			memcpy(crypto_256.rec_seq, &seq, sizeof(seq));
 		}
 
@@ -168,15 +178,25 @@ int config_ktls(int sockfd, WOLFSSL *ssl)
 
 		if (key_size == TLS_CIPHER_AES_GCM_128_KEY_SIZE) {
 			memcpy(crypto_128.key, key, key_size);
-			memcpy(crypto_128.salt, iv, iv_size);
-			memcpy(crypto_128.iv, (unsigned char *)&rand_hi, 4);
-			memcpy((crypto_128.iv + 4), (unsigned char *)&rand_lo, 4);
+			if (crypto_info->version == TLS_1_2_VERSION) {
+			    memcpy(crypto_128.salt, iv, 4);
+			    memcpy(crypto_128.iv, (unsigned char *)&rand_hi, 4);
+			    memcpy((crypto_128.iv + 4), (unsigned char *)&rand_lo, 4);
+			} else { /* TLS_1_3_VERSION */
+			    memcpy(crypto_128.salt, iv, 4);
+			    memcpy(crypto_128.iv, (iv + 4), 8);
+			}
 			memcpy(crypto_128.rec_seq, &seq, sizeof(seq));
 		} else { /* (key_size == TLS_CIPHER_AES_GCM_256_KEY_SIZE) */
 			memcpy(crypto_256.key, key, key_size);
-			memcpy(crypto_256.salt, iv, iv_size);
-			memcpy(crypto_256.iv, (unsigned char *)&rand_hi, 4);
-			memcpy((crypto_256.iv + 4), (unsigned char *)&rand_lo, 4);
+			if (crypto_info->version == TLS_1_2_VERSION) {
+			    memcpy(crypto_256.salt, iv, 4);
+			    memcpy(crypto_256.iv, (unsigned char *)&rand_hi, 4);
+			    memcpy((crypto_256.iv + 4), (unsigned char *)&rand_lo, 4);
+			} else { /* TLS_1_3_VERSION */
+			    memcpy(crypto_256.salt, iv, 4);
+			    memcpy(crypto_256.iv, (iv + 4), 8);
+			}
 			memcpy(crypto_256.rec_seq, &seq, sizeof(seq));
 		}
 
@@ -192,6 +212,10 @@ int config_ktls(int sockfd, WOLFSSL *ssl)
 
 static void servelet(int client, WOLFSSL *ssl)
 {
+	char cmsg[CMSG_SPACE(sizeof(unsigned char))];
+	struct iovec msg_iov;
+	struct msghdr msg = { 0 };
+	struct cmsghdr *cmsgh;
 	char *buf;
 	int rc, cnt, len;
 
@@ -223,9 +247,18 @@ static void servelet(int client, WOLFSSL *ssl)
 		goto end_shutdown;
 	}
 
+	msg_iov.iov_base = buf;
+	msg_iov.iov_len = bufsize;
+	msg.msg_control = cmsg;
+	msg.msg_controllen = sizeof(cmsg);
+	msg.msg_iov = &msg_iov;
+	msg.msg_iovlen = 1;
+
 	for (cnt = 1; true; cnt++) {
+try_again:
 		if (ktls_rx)
-			len = recv(client, buf, bufsize, 0);
+			//len = recv(client, buf, bufsize, 0);
+			len = recvmsg(client, &msg, 0);
 		else
 			len = wolfSSL_read(ssl, buf, bufsize);
 		if (len <= 0) {
@@ -234,7 +267,19 @@ static void servelet(int client, WOLFSSL *ssl)
 			break;
 		}
 
-		printf("%4d: received %d bytes\n", cnt, len);
+		if (ktls_rx) {
+			cmsgh = CMSG_FIRSTHDR(&msg);
+			if ((cmsgh->cmsg_level == SOL_TLS) &&
+			    (cmsgh->cmsg_type == TLS_GET_RECORD_TYPE)) {
+				printf("%4d: received %d bytes (rec=%d)\n",
+				       cnt, len,
+				       *((unsigned char *)CMSG_DATA(cmsgh)));
+				if (*((unsigned char *)CMSG_DATA(cmsgh)) != 23)
+					goto try_again;
+			}
+		} else {
+		    printf("%4d: received %d bytes\n", cnt, len);
+		}
 
 		if (ktls_tx)
 			len = send(client, buf, len, 0);

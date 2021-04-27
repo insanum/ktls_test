@@ -14,6 +14,7 @@
 #define SERVER_CA_FILE  "certs/ca-cert.pem"
 
 bool quiet = false;
+bool send_alert = false;
 bool random_bufsize = false;
 int bufsize = 32768;
 int generate_data = 0;
@@ -133,15 +134,25 @@ int config_ktls(int sockfd, WOLFSSL *ssl)
 
 		if (key_size == TLS_CIPHER_AES_GCM_128_KEY_SIZE) {
 			memcpy(crypto_128.key, key, key_size);
-			memcpy(crypto_128.salt, iv, iv_size);
-			memcpy(crypto_128.iv, (unsigned char *)&rand_hi, 4);
-			memcpy((crypto_128.iv + 4), (unsigned char *)&rand_lo, 4);
+			if (crypto_info->version == TLS_1_2_VERSION) {
+			    memcpy(crypto_128.salt, iv, 4);
+			    memcpy(crypto_128.iv, (unsigned char *)&rand_hi, 4);
+			    memcpy((crypto_128.iv + 4), (unsigned char *)&rand_lo, 4);
+			} else { /* TLS_1_3_VERSION */
+			    memcpy(crypto_128.salt, iv, 4);
+			    memcpy(crypto_128.iv, (iv + 4), 8);
+			}
 			memcpy(crypto_128.rec_seq, &seq, sizeof(seq));
 		} else { /* (key_size == TLS_CIPHER_AES_GCM_256_KEY_SIZE) */
 			memcpy(crypto_256.key, key, key_size);
-			memcpy(crypto_256.salt, iv, iv_size);
-			memcpy(crypto_256.iv, (unsigned char *)&rand_hi, 4);
-			memcpy((crypto_256.iv + 4), (unsigned char *)&rand_lo, 4);
+			if (crypto_info->version == TLS_1_2_VERSION) {
+			    memcpy(crypto_256.salt, iv, 4);
+			    memcpy(crypto_256.iv, (unsigned char *)&rand_hi, 4);
+			    memcpy((crypto_256.iv + 4), (unsigned char *)&rand_lo, 4);
+			} else { /* TLS_1_3_VERSION */
+			    memcpy(crypto_256.salt, iv, 4);
+			    memcpy(crypto_256.iv, (iv + 4), 8);
+			}
 			memcpy(crypto_256.rec_seq, &seq, sizeof(seq));
 		}
 
@@ -165,15 +176,25 @@ int config_ktls(int sockfd, WOLFSSL *ssl)
 
 		if (key_size == TLS_CIPHER_AES_GCM_128_KEY_SIZE) {
 			memcpy(crypto_128.key, key, key_size);
-			memcpy(crypto_128.salt, iv, iv_size);
-			memcpy(crypto_128.iv, (unsigned char *)&rand_hi, 4);
-			memcpy((crypto_128.iv + 4), (unsigned char *)&rand_lo, 4);
+			if (crypto_info->version == TLS_1_2_VERSION) {
+			    memcpy(crypto_128.salt, iv, 4);
+			    memcpy(crypto_128.iv, (unsigned char *)&rand_hi, 4);
+			    memcpy((crypto_128.iv + 4), (unsigned char *)&rand_lo, 4);
+			} else { /* TLS_1_3_VERSION */
+			    memcpy(crypto_128.salt, iv, 4);
+			    memcpy(crypto_128.iv, (iv + 4), 8);
+			}
 			memcpy(crypto_128.rec_seq, &seq, sizeof(seq));
 		} else { /* (key_size == TLS_CIPHER_AES_GCM_256_KEY_SIZE) */
 			memcpy(crypto_256.key, key, key_size);
-			memcpy(crypto_256.salt, iv, iv_size);
-			memcpy(crypto_256.iv, (unsigned char *)&rand_hi, 4);
-			memcpy((crypto_256.iv + 4), (unsigned char *)&rand_lo, 4);
+			if (crypto_info->version == TLS_1_2_VERSION) {
+			    memcpy(crypto_256.salt, iv, 4);
+			    memcpy(crypto_256.iv, (unsigned char *)&rand_hi, 4);
+			    memcpy((crypto_256.iv + 4), (unsigned char *)&rand_lo, 4);
+			} else { /* TLS_1_3_VERSION */
+			    memcpy(crypto_256.salt, iv, 4);
+			    memcpy(crypto_256.iv, (iv + 4), 8);
+			}
 			memcpy(crypto_256.rec_seq, &seq, sizeof(seq));
 		}
 
@@ -185,6 +206,33 @@ int config_ktls(int sockfd, WOLFSSL *ssl)
 	}
 
 	return 0;
+}
+
+/* send TLS control message using record_type */
+static int send_ctrl_message(int sockfd, unsigned char record_type,
+			     void *data, size_t length)
+{
+	struct msghdr msg = { 0 };
+	int cmsg_len = sizeof(record_type);
+	struct cmsghdr *cmsg;
+	char buf[CMSG_SPACE(cmsg_len)];
+	struct iovec msg_iov; /* vector of data to send from */
+
+	msg.msg_control = buf;
+	msg.msg_controllen = sizeof(buf);
+	cmsg = CMSG_FIRSTHDR(&msg);
+	cmsg->cmsg_level = SOL_TLS;
+	cmsg->cmsg_type = TLS_SET_RECORD_TYPE;
+	cmsg->cmsg_len = CMSG_LEN(cmsg_len);
+	*CMSG_DATA(cmsg) = record_type;
+	msg.msg_controllen = cmsg->cmsg_len;
+
+	msg_iov.iov_base = data;
+	msg_iov.iov_len = length;
+	msg.msg_iov = &msg_iov;
+	msg.msg_iovlen = 1;
+
+	return sendmsg(sockfd, &msg, 0);
 }
 
 static int send_all_and_receive(int sockfd, WOLFSSL *ssl, char *buf,
@@ -455,6 +503,13 @@ static void echoclient(void)
 	       (random_bufsize) ? "random 1.." : "",
 	       bufsize);
 
+	if (send_alert) {
+	    unsigned char alert[2];
+	    alert[0] = 1; /* WARNING=1 FATAL=2 */
+	    alert[1] = 10; /* unexpected message */
+	    send_ctrl_message(sockfd, 21, alert, 2);
+	}
+
 	if (send_all)
 		send_all_and_receive(sockfd, ssl, buf, &totsent, &totreceived);
 	else
@@ -482,6 +537,7 @@ static void usage(char *cmd)
 "  -T           enable TCP cork (default off)\n"
 "  -t           send all data then receive (default send/recv/repeat)\n"
 "  -q           quiet, don't print out received data\n"
+"  -c           send an alert control message first before data\n"
 "  -k <dir>     KTLS direction (tx|rx|all|none) (default none)\n"
 "  -a <aes>     AES key size (128|256) (default 128)\n"
 "  -b <size>    send buffer (record) size (default 32768)\n"
@@ -499,7 +555,7 @@ int main(int argc, char *argv[])
 
 	srand((unsigned int)time(&t));
 
-	while ((option = getopt(argc, argv, "hTtqk:a:b:r:g:p:s:")) != -1) {
+	while ((option = getopt(argc, argv, "hTtqck:a:b:r:g:p:s:")) != -1) {
 		switch (option) {
 		case 'T':
 			send_all = true;
@@ -510,6 +566,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'q':
 			quiet = true;
+			break;
+		case 'c':
+			send_alert = true;
 			break;
 		case 'k':
 			if (strcmp(optarg, "tx") == 0) {
