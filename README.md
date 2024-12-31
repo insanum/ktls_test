@@ -394,3 +394,25 @@ the point where they don't cross packet boundaries anymore.
 
 ----
 
+## Updating Test Certificates
+
+The currently checked in certificates will work until end of 2034.
+After that they can be regenerated with:
+
+## CA Certificate
+
+```shell
+openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+    -keyout certs/ca-key.pem -out certs/ca-cert.pem -subj \
+    "/CN=Test CA"
+```
+
+## Server Certificate
+
+```shell
+openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+    -CA certs/ca-cert.pem -CAkey certs/ca-key.pem \
+    -keyout certs/server-key.pem -out certs/server-cert.pem \
+    -subj "/CN=example.com" \
+    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+```

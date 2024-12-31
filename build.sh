@@ -1,5 +1,7 @@
 #!/bin/sh
 
+# shellcheck disable=SC2086 # Double quote to prevent globbing and word splitting ($WOLFSSL_LIBS).
+
 set -x -e
 
 WOLFSSL_GIT=https://github.com/wolfSSL/wolfssl
@@ -25,19 +27,18 @@ if [ ! -d ./wolfssl ]; then
     git clone $WOLFSSL_GIT
     cd wolfssl
     ./autogen.sh
-    patch -p1 < ../wolfssl.patch
     cd -
 fi
 
 build_wolfssl()
 {
-    if [ $1 -eq 1 ]; then
+    if [ "$1" -eq 1 ]; then
         TLS12="--enable-tlsv12"
     else
         TLS12="--disable-tlsv12"
     fi
 
-    if [ $2 -eq 1 ]; then
+    if [ "$2" -eq 1 ]; then
         TLS13="--enable-tls13"
     else
         TLS13="--disable-tls13"
