@@ -64,6 +64,16 @@ static int create_socket(char *server_ip, int port)
 	return sockfd;
 }
 
+static void print_ssl_error(const char* prefix, WOLFSSL * ssl)
+{
+	int err;
+
+	printf("ERROR: %s: ", prefix);
+	err = wolfSSL_get_error(ssl, 0);
+	wolfSSL_ERR_print_errors_fp(stdout, err);
+	printf("\n");
+}
+
 int config_ktls(int sockfd, WOLFSSL *ssl)
 {
 	struct tls_crypto_info *crypto_info;
@@ -287,8 +297,7 @@ static int send_all_and_receive(int sockfd, WOLFSSL *ssl, char *buf,
 		else
 			len = wolfSSL_send(ssl, buf, len, 0);
 		if (len <= 0) {
-			printf("SSL write error %d\n",
-			       wolfSSL_get_error(ssl, 0));
+			print_ssl_error("SSL write error", ssl);
 			break;
 		}
 
@@ -319,8 +328,7 @@ static int send_all_and_receive(int sockfd, WOLFSSL *ssl, char *buf,
 		else
 			len = wolfSSL_read(ssl, buf, bufsize);
 		if (len <= 0) {
-			printf("ERROR: SSL read error %d\n",
-			       wolfSSL_get_error(ssl, 0));
+			print_ssl_error("SSL read error", ssl);
 			break;
 		}
 
@@ -373,8 +381,7 @@ static int send_receive_repeat(int sockfd, WOLFSSL *ssl, char *buf,
 		else
 			len = wolfSSL_send(ssl, buf, len, 0);
 		if (len <= 0) {
-			printf("SSL write error %d\n",
-			       wolfSSL_get_error(ssl, 0));
+			print_ssl_error("SSL write error", ssl);
 			break;
 		}
 
@@ -389,8 +396,7 @@ static int send_receive_repeat(int sockfd, WOLFSSL *ssl, char *buf,
 			else
 				len = wolfSSL_read(ssl, buf, bufsize);
 			if (len <= 0) {
-				printf("ERROR: SSL read error %d\n",
-				       wolfSSL_get_error(ssl, 0));
+				print_ssl_error("SSL read error", ssl);
 				break;
 			}
 
@@ -429,9 +435,10 @@ static void echoclient(void)
 	method = wolfSSLv23_client_method();
 	ctx    = wolfSSL_CTX_new(method);
 
-	if (wolfSSL_CTX_load_verify_locations(ctx, SERVER_CA_FILE, 0) !=
-	    WOLFSSL_SUCCESS) {
-		printf("ERROR: can't load server CA file\n");
+	rc = wolfSSL_CTX_load_verify_locations(ctx, SERVER_CA_FILE, 0);
+	if (rc != WOLFSSL_SUCCESS) {
+		printf("ERROR: can't load server CA file: %s\n",
+		       wc_GetErrorString(rc));
 		goto end_ctx;
 	}
 
@@ -465,8 +472,7 @@ static void echoclient(void)
 					"TLS13-AES256-GCM-SHA384");
 	}
 	if (rc != WOLFSSL_SUCCESS) {
-		printf("ERROR: SSL set cipher error %d\n",
-		       wolfSSL_get_error(ssl, 0));
+		print_ssl_error("SSL set cipher error", ssl);
 		goto end_ssl;
 	}
 
@@ -480,8 +486,7 @@ static void echoclient(void)
 
 	rc = wolfSSL_connect(ssl);
 	if (rc != WOLFSSL_SUCCESS) {
-		printf("ERROR: SSL connect error %d\n",
-		       wolfSSL_get_error(ssl, 0));
+		print_ssl_error("SSL connect error", ssl);
 		goto end_sock;
 	}
 
